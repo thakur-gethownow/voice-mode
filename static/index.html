@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Realtime Full-Duplex Voice (Adaptive VAD)</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Roboto, "Segoe UI", Arial; padding: 20px; }
+    button { padding: 8px 12px; margin-right: 8px; }
+    #meter { width: 300px; height: 12px; background:#eee; border-radius:6px; overflow:hidden; display:inline-block; vertical-align:middle; }
+    #meter > i { display:block; height:100%; width:0%; background:#4caf50; }
+    #status { margin-top:10px; color:#555; }
+  </style>
+</head>
+<body>
+  <h3>Realtime Full-Duplex Voice Chat (Adaptive Silence Detection)</h3>
+  <button id="startBtn">Start Session</button>
+  <button id="stopBtn" disabled>Stop Session</button>
+  <div style="display:inline-block; margin-left: 12px;">
+    <div id="meter"><i></i></div>
+  </div>
+  <div id="status">idle</div>
+
+<script>
+/*
+  Key design points:
+  - Single WS connection reused for whole session.
+  - Capture audio with AudioContext + ScriptProcessor and accumulate into ~CHUNK_MS chunks.
+  - Send binary Int16 PCM chunks as ArrayBuffer. Precede them with a small JSON control message (depends on server).
+  - Adaptive VAD: calibrate initial noise floor then detect voice start/stop using rolling RMS and thresholds.
+  - Send `activityStart` when voice begins, `activityEnd` after silence timeout.
+  - Play back server-sent audio (binary) by decoding and scheduling with AudioContext.
+  - Keepalive pings and simple reconnect/backoff.
+  NOTE: adjust SERVER_WS, and confirm server expects: 
+        1) control messages as JSON text (e.g., {type: 'activityStart'}), and 
+        2) raw PCM Int16 frames as binary. If your server expects Opus/webm blobs instead, switch capture method to MediaRecorder.
+*/
+
+const SERVER_WS = "ws://localhost:8001/ws";
+const CHUNK_MS = 200;                // send audio approx every X ms
+const BUFFER_SIZE = 4096;            // ScriptProcessor buffer size
+const SILENCE_DURATION_MS = 1000;    // silence required to send activityEnd
+const CALIBRATE_MS = 1200;           // initial ambient noise calibration period
+const SILENCE_THRESHOLD_MULT = 3.0;  // voice threshold = noiseFloor * mult
+const KEEPALIVE_INTERVAL_MS = 20000; // send ping every 20s
+
+let ws = null;
+let audioCtx = null;
+let processor = null;
+let mediaStream = null;
+let sourceNode = null;
+let sampleRate = 48000; // will update from audioCtx.sampleRate
+let sendBuffer = [];    // accumulate Float32 samples
+let sendBufferSize = 0;
+let lastSendAt = 0;
+
+// VAD vars
+let playbackTime = 0;  // global tracker for sequential audio
+let noiseFloor = 0;
+let calibrated = false;
+let calibrationStart = null;
+let speaking = false;
+let silenceStart = null;
+
+// UI
+const startBtn = document.getElementById('startBtn');
+const stopBtn = document.getElementById('stopBtn');
+const statusEl = document.getElementById('status');
+const meterBar = document.querySelector('#meter > i');
+
+startBtn.onclick = startSession;
+stopBtn.onclick = stopSession;
+
+function logStatus(s) {
+  statusEl.textContent = s;
+}
+
+// --- WebSocket helpers ---
+let pingTimer = null;
+let reconnectTimer = null;
+let reconnectAttempts = 0;
+
+function openWs() {
+  if (ws && ws.readyState === WebSocket.OPEN) return;
+  ws = new WebSocket(SERVER_WS);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    console.log('WS open');
+    reconnectAttempts = 0;
+    logStatus('connected');
+    startKeepalive();
+    // optionally send session-start control
+    sendJson({ type: 'session_start', sampleRate });
+  };
+
+  ws.onmessage = async (ev) => {
+    // If server sends text JSON
+    if (typeof ev.data === 'string') {
+      try {
+        const msg = JSON.parse(ev.data);
+        console.log('ws msg', msg);
+        // handle control text messages as needed
+        return;
+      } catch (e) {
+        console.log('ws text:', ev.data);
+        return;
+      }
+    }
+
+    // binary: assume audio bytes (raw PCM16 24kHz from Gemini) — decode & play
+    if (ev.data instanceof ArrayBuffer) {
+      try {
+        // Try decodeAudioData — this assumes the server sent a valid encoded audio container (e.g. WAV/Opus)
+        const audioData = ev.data;
+        audioCtx.decodeAudioData(audioData.slice(0)).then(decoded => {
+          playDecodedAudio(decoded);
+        }).catch(err => {
+          // Fallback: treat as raw PCM16LE 24000Hz mono
+          console.warn('decodeAudioData failed — playing as raw PCM16 24kHz.');
+          playRawPCM16(audioData, 24000);
+        });
+      } catch (err) {
+        console.error('ws binary handling error', err);
+      }
+    }
+  };
+
+  ws.onclose = (e) => {
+    console.log('WS closed', e);
+    stopKeepalive();
+    logStatus('disconnected');
+    scheduleReconnect();
+  };
+
+  ws.onerror = (e) => {
+    console.error('WS error', e);
+  };
+}
+
+// Play raw PCM16LE mono at given sample rate, scheduled sequentially
+function playRawPCM16(buffer, sampleRate = 24000) {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const int16 = new Int16Array(buffer);
+  const float32 = new Float32Array(int16.length);
+  for (let i = 0; i < int16.length; i++) {
+    float32[i] = int16[i] / 32768;
+  }
+  const audioBuffer = audioCtx.createBuffer(1, float32.length, sampleRate);
+  audioBuffer.getChannelData(0).set(float32);
+  const src = audioCtx.createBufferSource();
+  src.buffer = audioBuffer;
+  src.connect(audioCtx.destination);
+  // Schedule playback sequentially
+  const now = audioCtx.currentTime;
+  if (playbackTime < now) {
+    playbackTime = now;
+  }
+  src.start(playbackTime);
+  playbackTime += audioBuffer.duration;
+}
+
+function scheduleReconnect() {
+  if (reconnectTimer) return;
+  reconnectAttempts++;
+  const backoff = Math.min(30000, 1000 * Math.pow(1.5, reconnectAttempts));
+  console.log('reconnect in', backoff);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    openWs();
+  }, backoff);
+}
+
+function startKeepalive(){
+  stopKeepalive();
+  pingTimer = setInterval(() => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try { ws.send(JSON.stringify({type:'ping', ts: Date.now()})); }
+      catch(e){}
+    }
+  }, KEEPALIVE_INTERVAL_MS);
+}
+function stopKeepalive(){ if (pingTimer) { clearInterval(pingTimer); pingTimer = null; } }
+function sendJson(obj){ if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj)); }
+
+// --- Audio capture, chunking, encoding to Int16 ---
+function startAudio() {
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  sampleRate = audioCtx.sampleRate;
+  return navigator.mediaDevices.getUserMedia({audio:true})
+    .then(stream => {
+      mediaStream = stream;
+      sourceNode = audioCtx.createMediaStreamSource(stream);
+
+      // ScriptProcessorNode for capture (simple, widely supported)
+      processor = audioCtx.createScriptProcessor(BUFFER_SIZE, 1, 1);
+      sourceNode.connect(processor);
+      processor.connect(audioCtx.destination); // required in some browsers
+
+      // reset send buffer
+      sendBuffer = [];
+      sendBufferSize = 0;
+      calibrated = false;
+      noiseFloor = 0;
+      calibrationStart = performance.now();
+
+      processor.onaudioprocess = onAudioProcess;
+      logStatus('listening for voice...');
+    });
+}
+
+function stopAudioNodes() {
+  if (processor) { processor.disconnect(); processor.onaudioprocess = null; processor = null; }
+  if (sourceNode) { try { sourceNode.disconnect(); } catch(e){} sourceNode = null; }
+  if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+  if (audioCtx) { try { audioCtx.close(); } catch(e){} audioCtx = null; }
+}
+
+// accumulate frames, send when we cross CHUNK_MS window
+function onAudioProcess(ev) {
+  const input = ev.inputBuffer.getChannelData(0);
+  const now = performance.now();
+
+  // compute RMS and update UI meter
+  let sum = 0;
+  for (let i=0;i<input.length;i++){ sum += input[i]*input[i]; }
+  const rms = Math.sqrt(sum / input.length);
+  updateMeter(rms);
+
+  // calibration
+  if (!calibrated) {
+    if (now - calibrationStart < CALIBRATE_MS) {
+      noiseFloor = noiseFloor === 0 ? rms : (noiseFloor * 0.95 + rms * 0.05);
+    } else {
+      calibrated = true;
+      noiseFloor = Math.max(1e-6, noiseFloor); // avoid zero
+      console.log('calibrated noiseFloor', noiseFloor);
+    }
+  }
+
+  // VAD logic
+  const voiceThreshold = Math.max(1e-6, noiseFloor * SILENCE_THRESHOLD_MULT);
+  if (calibrated && rms > voiceThreshold) {
+    // voice present
+    silenceStart = null;
+    if (!speaking) {
+      speaking = true;
+      sendJson({ type: 'activityStart', ts: Date.now() });
+      console.log('>>> activityStart');
+      logStatus('speaking');
+    }
+  } else {
+    // low volume
+    if (speaking) {
+      if (!silenceStart) silenceStart = now;
+      else if (now - silenceStart >= SILENCE_DURATION_MS) {
+        // end of user turn
+        speaking = false;
+        silenceStart = null;
+        sendJson({ type: 'activityEnd', ts: Date.now() });
+        console.log('>>> activityEnd');
+        logStatus('idle (waiting for response...)');
+      }
+    } else {
+      // not speaking, optionally adapt noise floor slowly
+      if (calibrated) {
+        // adapt noise floor slowly so environment drift is handled
+        noiseFloor = noiseFloor * 0.999 + rms * 0.001;
+      }
+    }
+  }
+
+  // Only send audio chunks if currently speaking (between activityStart and activityEnd)
+  if (speaking) {
+    // copy into accumulator
+    // keep a typed copy to avoid referencing float32 view later
+    sendBuffer.push(new Float32Array(input));
+    sendBufferSize += input.length;
+
+    // check if enough samples to send chunk (CHUNK_MS)
+    const samplesPerMs = sampleRate / 1000;
+    const targetSamples = Math.floor(samplesPerMs * CHUNK_MS);
+
+    if (sendBufferSize >= targetSamples) {
+      // merge into single Float32Array
+      const out = new Float32Array(sendBufferSize);
+      let offset = 0;
+      for (let buf of sendBuffer) {
+        out.set(buf, offset);
+        offset += buf.length;
+      }
+      // reset accumulator
+      sendBuffer = [];
+      sendBufferSize = 0;
+
+      // convert to int16
+      const int16 = floatTo16BitPCM(out);
+
+      // send a small header JSON before the binary so server can interpret if needed
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        // header includes type and sampleRate so server can decode appropriately
+        try { ws.send(JSON.stringify({ type:'input_audio_chunk', encoding:'pcm_s16', sampleRate: sampleRate, ts: Date.now() })); } catch(e){}
+        try { ws.send(int16.buffer); } catch(e){ console.error('send binary fail', e); }
+        lastSendAt = Date.now();
+      }
+    }
+  }
+}
+
+// float32 -> Int16 (little endian)
+function floatTo16BitPCM(float32Array) {
+  const l = float32Array.length;
+  const buffer = new ArrayBuffer(l * 2);
+  const view = new DataView(buffer);
+  let offset = 0;
+  for (let i = 0; i < l; i++, offset += 2) {
+    let s = Math.max(-1, Math.min(1, float32Array[i]));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+  }
+  return new Int16Array(buffer);
+}
+
+// --- Playback of decoded AudioBuffer ---
+function playDecodedAudio(audioBuffer) {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const src = audioCtx.createBufferSource();
+  src.buffer = audioBuffer;
+  src.connect(audioCtx.destination);
+  src.start();
+}
+
+// Play raw PCM16LE mono at given sample rate, scheduled sequentially
+function playRawPCM16(buffer, sampleRate = 24000) {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const int16 = new Int16Array(buffer);
+  const float32 = new Float32Array(int16.length);
+  for (let i = 0; i < int16.length; i++) {
+    float32[i] = int16[i] / 32768;
+  }
+  const audioBuffer = audioCtx.createBuffer(1, float32.length, sampleRate);
+  audioBuffer.getChannelData(0).set(float32);
+  const src = audioCtx.createBufferSource();
+  src.buffer = audioBuffer;
+  src.connect(audioCtx.destination);
+  // Schedule playback sequentially
+  const now = audioCtx.currentTime;
+  if (playbackTime < now) {
+    playbackTime = now;
+  }
+  src.start(playbackTime);
+  playbackTime += audioBuffer.duration;
+}
+// --- UI helpers ---
+function updateMeter(rms) {
+  // convert rms to 0..1 scale (rough)
+  // scale by 10x so quiet voices are visible; tune as required
+  const v = Math.min(1, Math.sqrt(rms) * 10);
+  meterBar.style.width = `${(v*100).toFixed(1)}%`;
+}
+
+// --- Control flow: start/stop session ---
+async function startSession() {
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+  logStatus('starting session...');
+
+  openWs();
+  await startAudio();
+
+  // send initial presence and sample rate once WS is open (will be retried by server if needed)
+  setTimeout(()=> {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      sendJson({ type: 'hello', sampleRate, ts: Date.now() });
+    }
+  }, 400);
+}
+
+function stopSession() {
+  // send final activityEnd and session_stop
+  try {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      sendJson({ type: 'activityEnd', ts: Date.now() });
+      sendJson({ type: 'session_stop', ts: Date.now() });
+      ws.close();
+    }
+  } catch(e){}
+
+  stopKeepalive();
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  stopAudioNodes();
+
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+  logStatus('stopped');
+}
+
+// --- Utility: send small diagnostic messages (optional) ---
+window.addEventListener('beforeunload', () => {
+  try { if (ws && ws.readyState === WebSocket.OPEN) ws.close(); } catch(e){}
+});
+
+// --- end of file ---
+</script>
+</body>
+</html>
