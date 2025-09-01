@@ -2,23 +2,364 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Realtime Full-Duplex Voice (Adaptive VAD)</title>
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+  <title>AI Voice Assistant</title>
   <style>
-    body { font-family: system-ui, -apple-system, Roboto, "Segoe UI", Arial; padding: 20px; }
-    button { padding: 8px 12px; margin-right: 8px; }
-    #meter { width: 300px; height: 12px; background:#eee; border-radius:6px; overflow:hidden; display:inline-block; vertical-align:middle; }
-    #meter > i { display:block; height:100%; width:0%; background:#4caf50; }
-    #status { margin-top:10px; color:#555; }
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body { 
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      padding: 20px;
+      color: #333;
+    }
+    
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      background: rgba(255, 255, 255, 0.95);
+      border-radius: 20px;
+      padding: 30px;
+      backdrop-filter: blur(10px);
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+    }
+    
+    .header {
+      text-align: center;
+      margin-bottom: 30px;
+    }
+    
+    .header h1 {
+      font-size: 2.5rem;
+      font-weight: 700;
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 10px;
+    }
+    
+    .header p {
+      color: #666;
+      font-size: 1.1rem;
+      font-weight: 300;
+    }
+    
+    .controls {
+      display: flex;
+      justify-content: center;
+      gap: 15px;
+      margin-bottom: 25px;
+      flex-wrap: wrap;
+    }
+    
+    button { 
+      padding: 12px 24px;
+      border: none;
+      border-radius: 12px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    
+    #startBtn {
+      background: linear-gradient(135deg, #4CAF50, #45a049);
+      color: white;
+      box-shadow: 0 4px 15px rgba(76, 175, 80, 0.3);
+    }
+    
+    #startBtn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(76, 175, 80, 0.4);
+    }
+    
+    #startBtn:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+    
+    #stopBtn {
+      background: linear-gradient(135deg, #f44336, #d32f2f);
+      color: white;
+      box-shadow: 0 4px 15px rgba(244, 67, 54, 0.3);
+    }
+    
+    #stopBtn:hover:not(:disabled) {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(244, 67, 54, 0.4);
+    }
+    
+    #stopBtn:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+    
+    #testBtn {
+      background: linear-gradient(135deg, #2196F3, #1976D2);
+      color: white;
+      box-shadow: 0 4px 15px rgba(33, 150, 243, 0.3);
+    }
+    
+    #testBtn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(33, 150, 243, 0.4);
+    }
+    
+    .audio-meter {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 20px;
+      gap: 15px;
+    }
+    
+    .meter-label {
+      font-weight: 600;
+      color: #555;
+    }
+    
+    #meter { 
+      width: 200px; 
+      height: 8px; 
+      background: rgba(0,0,0,0.1); 
+      border-radius: 10px; 
+      overflow: hidden;
+      box-shadow: inset 0 2px 4px rgba(0,0,0,0.1);
+    }
+    
+    #meter > i { 
+      display: block; 
+      height: 100%; 
+      width: 0%; 
+      background: linear-gradient(90deg, #4CAF50, #8BC34A);
+      border-radius: 10px;
+      transition: width 0.1s ease;
+    }
+    
+    #status { 
+      text-align: center;
+      padding: 10px 20px;
+      background: rgba(0,0,0,0.05);
+      border-radius: 10px;
+      margin-bottom: 20px;
+      font-weight: 500;
+      text-transform: capitalize;
+    }
+    
+    /* Loader styles */
+    #loader {
+      text-align: center;
+      margin: 20px 0;
+      padding: 15px;
+      background: linear-gradient(135deg, #e3f2fd, #bbdefb);
+      border-radius: 12px;
+      border-left: 4px solid #2196F3;
+    }
+    
+    .spinner {
+      display: inline-block;
+      width: 20px;
+      height: 20px;
+      border: 3px solid rgba(33, 150, 243, 0.3);
+      border-top: 3px solid #2196F3;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin-left: 10px;
+      vertical-align: middle;
+    }
+    
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    
+    /* Conversation styles */
+    #conversation {
+      background: white;
+      border-radius: 15px;
+      padding: 20px;
+      box-shadow: inset 0 2px 10px rgba(0,0,0,0.05);
+      min-height: 300px;
+      max-height: 500px;
+      overflow-y: auto;
+    }
+    
+    .conversation-header {
+      text-align: center;
+      margin-bottom: 20px;
+      padding-bottom: 15px;
+      border-bottom: 2px solid #f0f0f0;
+    }
+    
+    .conversation-header h2 {
+      font-size: 1.5rem;
+      color: #333;
+      font-weight: 600;
+    }
+    
+    /* Message styles */
+    .message {
+      margin-bottom: 15px;
+      animation: slideIn 0.3s ease;
+    }
+    
+    @keyframes slideIn {
+      from {
+        opacity: 0;
+        transform: translateY(10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+    
+    .user-message {
+      display: flex;
+      justify-content: flex-end;
+    }
+    
+    .gemini-message {
+      display: flex;
+      justify-content: flex-start;
+    }
+    
+    .message-bubble {
+      max-width: 70%;
+      padding: 12px 18px;
+      border-radius: 18px;
+      position: relative;
+    }
+    
+    .user-message .message-bubble {
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      color: white;
+      border-bottom-right-radius: 6px;
+    }
+    
+    .gemini-message .message-bubble {
+      background: linear-gradient(135deg, #f8f9fa, #e9ecef);
+      color: #333;
+      border-bottom-left-radius: 6px;
+      border: 1px solid #e0e0e0;
+    }
+    
+    .message-label {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 5px;
+      opacity: 0.8;
+    }
+    
+    .user-message .message-label {
+      color: rgba(255,255,255,0.9);
+    }
+    
+    .gemini-message .message-label {
+      color: #666;
+    }
+    
+    .message-text {
+      font-size: 15px;
+      line-height: 1.5;
+      word-wrap: break-word;
+    }
+    
+    /* Scrollbar styling */
+    #conversation::-webkit-scrollbar {
+      width: 6px;
+    }
+    
+    #conversation::-webkit-scrollbar-track {
+      background: #f1f1f1;
+      border-radius: 10px;
+    }
+    
+    #conversation::-webkit-scrollbar-thumb {
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      border-radius: 10px;
+    }
+    
+    #conversation::-webkit-scrollbar-thumb:hover {
+      background: #555;
+    }
+    
+    /* Responsive design */
+    @media (max-width: 600px) {
+      .container {
+        margin: 10px;
+        padding: 20px;
+      }
+      
+      .header h1 {
+        font-size: 2rem;
+      }
+      
+      .controls {
+        flex-direction: column;
+        align-items: center;
+      }
+      
+      button {
+        width: 100%;
+        max-width: 200px;
+      }
+      
+      .message-bubble {
+        max-width: 85%;
+      }
+    }
   </style>
 </head>
 <body>
-  <h3>Realtime Full-Duplex Voice Chat (Adaptive Silence Detection)</h3>
-  <button id="startBtn">Start Session</button>
-  <button id="stopBtn" disabled>Stop Session</button>
-  <div style="display:inline-block; margin-left: 12px;">
-    <div id="meter"><i></i></div>
+  <div class="container">
+    <div class="header">
+      <h1>AI Voice Assistant</h1>
+      <p>Start a conversation with your intelligent AI companion</p>
+    </div>
+    
+    <div class="controls">
+      <button id="startBtn"><i class="fas fa-play"></i> Start Session</button>
+      <button id="stopBtn" disabled><i class="fas fa-stop"></i> Stop Session</button>
+      <button id="testBtn"><i class="fas fa-vial"></i> Test Message</button>
+    </div>
+    
+    <div class="audio-meter">
+      <span class="meter-label"><i class="fas fa-microphone"></i> Audio Level:</span>
+      <div id="meter"><i></i></div>
+    </div>
+    
+    <div id="status">🟢 idle</div>
+    
+    <div id="loader" style="display: none;">
+      <span><i class="fas fa-robot"></i> AI is thinking...</span>
+      <div class="spinner"></div>
+    </div>
+    
+    <div id="conversation">
+      <div class="conversation-header">
+        <h2><i class="fas fa-comments"></i> Conversation</h2>
+      </div>
+      <div id="messages"></div>
+    </div>
   </div>
-  <div id="status">idle</div>
 
 <script>
 /*
@@ -55,23 +396,145 @@ let lastSendAt = 0;
 
 // VAD vars
 let playbackTime = 0;  // global tracker for sequential audio
+let activeAudioSources = [];  // track active audio sources for interruption
+let audioSourceCounter = 0;   // assign unique IDs to audio sources for debugging
 let noiseFloor = 0;
 let calibrated = false;
 let calibrationStart = null;
 let speaking = false;
 let silenceStart = null;
+let currentUserMessage = ""; // Track current user speech
+let lastUserMessageElement = null; // Track the last user message element for updates
+let lastGeminiMessageElement = null; // Track the last Gemini message element for streaming updates
+let currentGeminiMessage = ""; // Track current Gemini response being built
 
 // UI
 const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
+const testBtn = document.getElementById('testBtn');
 const statusEl = document.getElementById('status');
 const meterBar = document.querySelector('#meter > i');
+const loaderEl = document.getElementById('loader');
+const messagesEl = document.getElementById('messages');
+
+console.log('[INIT] DOM elements found:', {
+  startBtn: !!startBtn,
+  stopBtn: !!stopBtn,
+  testBtn: !!testBtn,
+  statusEl: !!statusEl,
+  meterBar: !!meterBar,
+  loaderEl: !!loaderEl,
+  messagesEl: !!messagesEl
+});
 
 startBtn.onclick = startSession;
 stopBtn.onclick = stopSession;
+testBtn.onclick = () => {
+  console.log('[TEST] Adding test messages');
+  addMessage('Test user message', true);
+  addMessage('Test Gemini response', false);
+};
 
 function logStatus(s) {
   statusEl.textContent = s;
+}
+
+function showLoader() {
+  loaderEl.style.display = 'block';
+}
+
+function hideLoader() {
+  loaderEl.style.display = 'none';
+}
+
+function addMessage(text, isUser = false, updateLast = false) {
+  console.log(`[addMessage] Called with: text="${text}", isUser=${isUser}, updateLast=${updateLast}`);
+  console.log(`[addMessage] messagesEl:`, messagesEl);
+  
+  if (updateLast && isUser && lastUserMessageElement) {
+    // Update the existing user message
+    const textDiv = lastUserMessageElement.querySelector('.message-bubble .message-text');
+    if (textDiv) {
+      textDiv.textContent = text;
+      console.log(`[addMessage] Updated existing user message to: "${text}"`);
+    }
+    return;
+  }
+  
+  if (updateLast && !isUser && lastGeminiMessageElement) {
+    // Update the existing Gemini message (for streaming)
+    const textDiv = lastGeminiMessageElement.querySelector('.message-bubble .message-text');
+    if (textDiv) {
+      textDiv.textContent = text;
+      console.log(`[addMessage] Updated existing Gemini message to: "${text}"`);
+      // Auto-scroll to bottom
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+    return;
+  }
+  
+  const messageDiv = document.createElement('div');
+  messageDiv.className = `message ${isUser ? 'user-message' : 'gemini-message'}`;
+  
+  const bubbleDiv = document.createElement('div');
+  bubbleDiv.className = 'message-bubble';
+  
+  const labelDiv = document.createElement('div');
+  labelDiv.className = 'message-label';
+  labelDiv.textContent = isUser ? '👤 You' : '🤖 AI Assistant';
+  
+  const textDiv = document.createElement('div');
+  textDiv.className = 'message-text';
+  textDiv.textContent = text;
+  
+  bubbleDiv.appendChild(labelDiv);
+  bubbleDiv.appendChild(textDiv);
+  messageDiv.appendChild(bubbleDiv);
+  
+  console.log('[addMessage] Created messageDiv:', messageDiv);
+  console.log('[addMessage] messagesEl before appendChild:', messagesEl);
+  
+  messagesEl.appendChild(messageDiv);
+  
+  console.log('[addMessage] messagesEl after appendChild, children count:', messagesEl.children.length);
+  console.log(`[addMessage] Added new message: "${text}" (${isUser ? 'user' : 'gemini'})`);
+  console.log(`[addMessage] Total messages now:`, messagesEl.children.length);
+  
+  if (isUser) {
+    lastUserMessageElement = messageDiv;
+    console.log(`[addMessage] Set lastUserMessageElement`);
+  } else {
+    lastGeminiMessageElement = messageDiv;
+    console.log(`[addMessage] Set lastGeminiMessageElement`);
+  }
+  
+  // Auto-scroll to bottom
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function clearMessages() {
+  messagesEl.innerHTML = '';
+  lastUserMessageElement = null;
+  lastGeminiMessageElement = null;
+  currentGeminiMessage = "";
+}
+
+// Helper function to track audio sources
+function trackAudioSource(src, type) {
+  const id = ++audioSourceCounter;
+  src._debugId = id;
+  activeAudioSources.push(src);
+  console.log(`[AUDIO] Started ${type} audio (ID: ${id}, ${activeAudioSources.length} total sources)`);
+  
+  src.onended = () => {
+    const index = activeAudioSources.indexOf(src);
+    if (index > -1) {
+      activeAudioSources.splice(index, 1);
+      console.log(`[AUDIO] ${type} audio ended naturally (ID: ${id}, ${activeAudioSources.length} remaining)`);
+    }
+  };
+  
+  return src;
 }
 
 // --- WebSocket helpers ---
@@ -94,29 +557,111 @@ function openWs() {
   };
 
   ws.onmessage = async (ev) => {
+    console.log('[CLIENT] Raw message received:', ev.data);
+    console.log('[CLIENT] Message type:', typeof ev.data);
+    
     // If server sends text JSON
     if (typeof ev.data === 'string') {
       try {
         const msg = JSON.parse(ev.data);
-        console.log('ws msg', msg);
-        // handle control text messages as needed
+        console.log('[CLIENT] Parsed JSON message:', msg);
+        console.log('[CLIENT] Message type field:', msg.type);
+        console.log('[CLIENT] Message text field:', msg.text);
+        
+        // Handle interruption signal from server
+        if (msg.type === 'interrupt' && msg.message === 'stop_playback') {
+          console.log('[CLIENT] Handling interrupt signal');
+          stopAllAudioPlayback();
+          hideLoader(); // Hide loader if interruption occurs
+          return;
+        }
+        
+        // Handle text responses from Gemini
+        if (msg.type === 'text' && msg.text) {
+          console.log('[CLIENT] Handling text response from Gemini:', msg.text);
+          console.log('[CLIENT] messagesEl exists:', !!messagesEl);
+          console.log('[CLIENT] lastGeminiMessageElement exists:', !!lastGeminiMessageElement);
+          
+          // Append this chunk to the current Gemini message
+          currentGeminiMessage += msg.text;
+          console.log('[CLIENT] Current Gemini message:', currentGeminiMessage);
+          
+          if (!lastGeminiMessageElement) {
+            // Create new message if none exists
+            console.log('[CLIENT] Creating new Gemini message');
+            addMessage(currentGeminiMessage, false);
+            console.log('[CLIENT] After addMessage - lastGeminiMessageElement:', !!lastGeminiMessageElement);
+          } else {
+            // Update existing message with accumulated text
+            console.log('[CLIENT] Updating existing Gemini message');
+            addMessage(currentGeminiMessage, false, true);
+          }
+          
+          console.log('[CLIENT] Called addMessage for Gemini response');
+          return;
+        }
+        
+        // Handle transcriptions from server
+        if (msg.type === 'transcript') {
+          console.log(`[CLIENT] Handling ${msg.source} transcript:`, msg.text);
+          if (msg.source === 'input') {
+            // User speech transcription - update in real-time
+            currentUserMessage = msg.text;
+            if (speaking) {
+              // If user is still speaking, show live transcription
+              if (!lastUserMessageElement) {
+                console.log('[CLIENT] Adding new user transcript message');
+                addMessage(msg.text, true);
+              } else {
+                console.log('[CLIENT] Updating existing user transcript message');
+                addMessage(msg.text, true, true); // Update existing message
+              }
+            }
+          } else if (msg.source === 'output') {
+            // Gemini speech transcription - display this as the text response
+            console.log('[CLIENT] Gemini speech transcript:', msg.text);
+            
+            // Append this chunk to the current Gemini message
+            currentGeminiMessage += msg.text;
+            console.log('[CLIENT] Current Gemini message from transcript:', currentGeminiMessage);
+            
+            if (!lastGeminiMessageElement) {
+              // Create new message if none exists
+              console.log('[CLIENT] Creating new Gemini message from transcript');
+              addMessage(currentGeminiMessage, false);
+              console.log('[CLIENT] After addMessage - lastGeminiMessageElement:', !!lastGeminiMessageElement);
+            } else {
+              // Update existing message with accumulated text
+              console.log('[CLIENT] Updating existing Gemini message from transcript');
+              addMessage(currentGeminiMessage, false, true);
+            }
+          }
+          return;
+        }
+        
+        // handle other control text messages as needed
+        console.log('[CLIENT] Unhandled JSON message type:', msg.type, msg);
         return;
       } catch (e) {
-        console.log('ws text:', ev.data);
+        console.log('[CLIENT] Failed to parse JSON:', e);
+        console.log('[CLIENT] Non-JSON text received:', ev.data);
         return;
       }
     }
 
     // binary: assume audio bytes (raw PCM16 24kHz from Gemini) — decode & play
     if (ev.data instanceof ArrayBuffer) {
+      console.log(`[AUDIO] Received audio data, size: ${ev.data.byteLength} bytes`);
+      hideLoader(); // Hide loader when audio starts arriving
       try {
         // Try decodeAudioData — this assumes the server sent a valid encoded audio container (e.g. WAV/Opus)
         const audioData = ev.data;
         audioCtx.decodeAudioData(audioData.slice(0)).then(decoded => {
+          console.log('[AUDIO] Successfully decoded audio, playing via decodeAudioData');
           playDecodedAudio(decoded);
         }).catch(err => {
           // Fallback: treat as raw PCM16LE 24000Hz mono
-          console.warn('decodeAudioData failed — playing as raw PCM16 24kHz.');
+          console.log('[AUDIO] decodeAudioData failed — playing as raw PCM16 24kHz');
           playRawPCM16(audioData, 24000);
         });
       } catch (err) {
@@ -128,12 +673,14 @@ function openWs() {
   ws.onclose = (e) => {
     console.log('WS closed', e);
     stopKeepalive();
+    hideLoader(); // Hide loader if connection is lost
     logStatus('disconnected');
     scheduleReconnect();
   };
 
   ws.onerror = (e) => {
     console.error('WS error', e);
+    hideLoader(); // Hide loader on error
   };
 }
 
@@ -150,6 +697,10 @@ function playRawPCM16(buffer, sampleRate = 24000) {
   const src = audioCtx.createBufferSource();
   src.buffer = audioBuffer;
   src.connect(audioCtx.destination);
+  
+  // Track this audio source for potential interruption
+  trackAudioSource(src, 'raw-PCM16');
+  
   // Schedule playback sequentially
   const now = audioCtx.currentTime;
   if (playbackTime < now) {
@@ -244,6 +795,18 @@ function onAudioProcess(ev) {
     silenceStart = null;
     if (!speaking) {
       speaking = true;
+      
+      // Reset Gemini message tracking for new turn
+      currentGeminiMessage = "";
+      lastGeminiMessageElement = null;
+      
+      // Don't immediately stop audio here - let the server decide if interruption is needed
+      // The server will send an interrupt signal only if Gemini is actually speaking
+      console.log('User started speaking - sending activityStart to server');
+      
+      // Create initial user message placeholder
+      addMessage('...', true);
+      
       sendJson({ type: 'activityStart', ts: Date.now() });
       console.log('>>> activityStart');
       logStatus('speaking');
@@ -258,7 +821,32 @@ function onAudioProcess(ev) {
         silenceStart = null;
         sendJson({ type: 'activityEnd', ts: Date.now() });
         console.log('>>> activityEnd');
+        
+        // Finalize user message with transcription or fallback
+        if (currentUserMessage && currentUserMessage !== "...") {
+          // We have a real transcription, make sure it's displayed
+          if (lastUserMessageElement) {
+            addMessage(currentUserMessage, true, true);
+          } else {
+            addMessage(currentUserMessage, true);
+          }
+        } else if (lastUserMessageElement) {
+          // No transcription received, show fallback
+          addMessage('[Voice message]', true, true);
+        } else {
+          // Fallback if no message element exists
+          addMessage('[Voice message]', true);
+        }
+        
+        currentUserMessage = "";
+        
         logStatus('idle (waiting for response...)');
+        
+        // Reset Gemini message tracking for new response
+        currentGeminiMessage = "";
+        lastGeminiMessageElement = null;
+        
+        showLoader(); // Show loader when waiting for Gemini's response
       }
     } else {
       // not speaking, optionally adapt noise floor slowly
@@ -298,7 +886,7 @@ function onAudioProcess(ev) {
       // send a small header JSON before the binary so server can interpret if needed
       if (ws && ws.readyState === WebSocket.OPEN) {
         // header includes type and sampleRate so server can decode appropriately
-        try { ws.send(JSON.stringify({ type:'input_audio_chunk', encoding:'pcm_s16', sampleRate: sampleRate, ts: Date.now() })); } catch(e){}
+        // try { ws.send(JSON.stringify({ type:'input_audio_chunk', encoding:'pcm_s16', sampleRate: sampleRate, ts: Date.now() })); } catch(e){}
         try { ws.send(int16.buffer); } catch(e){ console.error('send binary fail', e); }
         lastSendAt = Date.now();
       }
@@ -320,11 +908,50 @@ function floatTo16BitPCM(float32Array) {
 }
 
 // --- Playback of decoded AudioBuffer ---
+function stopAllAudioPlayback() {
+  // Stop all currently playing audio sources
+  console.log(`[AUDIO] Attempting to stop ${activeAudioSources.length} active audio sources`);
+  
+  let stoppedCount = 0;
+  const sourcesToStop = [...activeAudioSources]; // Create copy to avoid array modification issues
+  
+  for (let i = 0; i < sourcesToStop.length; i++) {
+    const source = sourcesToStop[i];
+    try {
+      // Check if source is still playable
+      if (source && typeof source.stop === 'function') {
+        source.stop(0); // Stop immediately
+        stoppedCount++;
+        console.log(`[AUDIO] Stopped audio source ID: ${source._debugId || 'unknown'}`);
+      }
+    } catch (e) {
+      // Source might already be stopped or finished
+      console.log(`[AUDIO] Source ID ${source._debugId || 'unknown'} already stopped:`, e.message);
+    }
+  }
+  
+  // Clear the entire array
+  activeAudioSources.length = 0;
+  
+  console.log(`[AUDIO] Successfully stopped ${stoppedCount} audio sources, cleared tracking array`);
+  
+  // Reset the sequential playback time to current time
+  if (audioCtx) {
+    const oldPlaybackTime = playbackTime;
+    playbackTime = audioCtx.currentTime;
+    console.log(`[AUDIO] Reset playback time from ${oldPlaybackTime.toFixed(3)} to ${playbackTime.toFixed(3)}`);
+  }
+}
+
 function playDecodedAudio(audioBuffer) {
   if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   const src = audioCtx.createBufferSource();
   src.buffer = audioBuffer;
   src.connect(audioCtx.destination);
+  
+  // Track this audio source for potential interruption
+  trackAudioSource(src, 'decoded');
+  
   src.start();
 }
 
@@ -341,6 +968,10 @@ function playRawPCM16(buffer, sampleRate = 24000) {
   const src = audioCtx.createBufferSource();
   src.buffer = audioBuffer;
   src.connect(audioCtx.destination);
+  
+  // Track this audio source for potential interruption
+  trackAudioSource(src, 'raw-PCM16');
+  
   // Schedule playback sequentially
   const now = audioCtx.currentTime;
   if (playbackTime < now) {
@@ -361,6 +992,8 @@ function updateMeter(rms) {
 async function startSession() {
   startBtn.disabled = true;
   stopBtn.disabled = false;
+  hideLoader(); // Make sure loader starts hidden
+  clearMessages(); // Clear previous conversation
   logStatus('starting session...');
 
   openWs();
@@ -370,6 +1003,8 @@ async function startSession() {
   setTimeout(()=> {
     if (ws && ws.readyState === WebSocket.OPEN) {
       sendJson({ type: 'hello', sampleRate, ts: Date.now() });
+      // Send session start message to trigger Gemini's initial response
+      sendJson({ type: 'sessionStart', ts: Date.now() });
     }
   }, 400);
 }
@@ -387,6 +1022,7 @@ function stopSession() {
   stopKeepalive();
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
   stopAudioNodes();
+  hideLoader(); // Hide loader when session stops
 
   startBtn.disabled = false;
   stopBtn.disabled = true;
