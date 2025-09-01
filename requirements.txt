@@ -6,3 +6,14 @@ aiohttp>=3.8.0
 numpy>=1.24.0
 soundfile>=0.12.1
 python-dotenv>=1.0.0
+# Audio processing
+pydub>=0.25.1
+scipy>=1.10.0
+# Database dependencies
+pymongo>=4.3.3
+motor>=3.1.1
+# OpenAI for embeddings
+openai>=1.0.0
+# WebSocket support
+websockets>=11.0.0
+starlette>=0.27.0
