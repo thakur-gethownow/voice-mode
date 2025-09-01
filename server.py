@@ -17,7 +17,6 @@ import base64
 import numpy as np
 import asyncio
 import json
-from pydub import AudioSegment
 from scipy.signal import resample_poly
 
 
