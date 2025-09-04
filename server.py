@@ -71,35 +71,45 @@ def get_text_embedding(text):
     Use OpenAI's text-embedding-3-large model to get the embedding for the input text.
     Returns a list of floats (embedding vector).
     """
-    response = openai.embeddings.create(
-        input=text,
-        model="text-embedding-ada-002"
-    )
-    # The API returns a list of data objects, each with an 'embedding' field
-    embedding = response.data[0].embedding
-    return embedding
+    try:
+        response = openai.embeddings.create(
+            input=text,
+            model="text-embedding-ada-002"
+        )
+        # The API returns a list of data objects, each with an 'embedding' field
+        embedding = response.data[0].embedding
+        return embedding
+    except Exception as e:
+        print(f"Error getting embedding: {e}")
+        # Return a dummy embedding or raise exception
+        raise e
 
 def find_best_match(query_text, top_k=100):
-    query_embedding = get_text_embedding(query_text)
-    print(f"Query embedding (len {len(query_embedding)}): {query_embedding[:5]}...")
-    # MongoDB Atlas vector search (requires Atlas Search index on 'embedding' field)
-    pipeline = [
-        {
-            "$vectorSearch": {
-                "queryVector": query_embedding,
-                "path": "embedding",
-                "numCandidates": 100,
-                "limit": top_k,
-                "index": "vector_index"  # Replace with your Atlas Search index name
+    try:
+        query_embedding = get_text_embedding(query_text)
+        print(f"Query embedding (len {len(query_embedding)}): {query_embedding[:5]}...")
+        # MongoDB Atlas vector search (requires Atlas Search index on 'embedding' field)
+        pipeline = [
+            {
+                "$vectorSearch": {
+                    "queryVector": query_embedding,
+                    "path": "embedding",
+                    "numCandidates": 100,
+                    "limit": top_k,
+                    "index": "vector_index"  # Replace with your Atlas Search index name
+                }
             }
-        }
-    ]
-    results = list(vector_collection.aggregate(pipeline))
-    print("Vector search results:")
-    for result in results:
-        print(f" - {result.get('text', '')} (score: {result.get('score', 0)})")
-    print(f"Found {len(results)} results")
-    return results
+        ]
+        results = list(vector_collection.aggregate(pipeline))
+        print("Vector search results:")
+        for result in results:
+            print(f" - {result.get('text', '')} (score: {result.get('score', 0)})")
+        print(f"Found {len(results)} results")
+        return results
+    except Exception as e:
+        print(f"Error in vector search: {e}")
+        # Return empty results instead of crashing
+        return []
 
 # Example FastAPI endpoint for testing
 @app.post("/vector_search")
@@ -174,7 +184,7 @@ async def websocket_endpoint(ws: WebSocket):
             "parts": [
                 {"text": """# Instructions for AI Coach
           You are a world-class AI workplace coach, designed to guide professionals to learn and build skills. Your goal is to provide hyper-personalised coaching that helps the user master their skills.
-
+            You will use the tools available to you, including a vector search of relevant documents, to inform your responses. If you use information from the documents, always cite the source by including the text "According to the documents" in your response.
           ---
 
           ## System Guardrails
@@ -290,20 +300,21 @@ async def websocket_endpoint(ws: WebSocket):
                                         query = call.args.get("query", "")
                                         top_k = call.args.get("top_k", 100)
                                         print(f"[SERVER] Gemini requested vector_search: query='{query}', top_k={top_k}")
-                                        matches = find_best_match(query, top_k=top_k)
-                                        for m in matches:
-                                            print("Mongo embedding_text:", m.get("text"))
-                                        # Prepare response as a string summary (or pass full docs as needed)
-                                        # summary = "\n".join([str(m.get("content", m)) for m in matches])
-                                        summary = "\n".join([str(m.get("text", "")) for m in matches])
-                                        print("MongoDB search results:", summary)
-                                        # await session.send_tool_response(
-                                        #     FunctionResponse(
-                                        #         name="vector_search",
-                                        #         response={"results": summary},
-                                        #         id=call.id
-                                        #     )
-                                        # )
+                                        
+                                        try:
+                                            matches = find_best_match(query, top_k=top_k)
+                                            for m in matches:
+                                                print("Mongo embedding_text:", m.get("text"))
+                                            # Prepare response as a string summary (or pass full docs as needed)
+                                            if matches:
+                                                summary = "\n".join([str(m.get("text", "")) for m in matches])
+                                            else:
+                                                summary = "No relevant information found in knowledge base."
+                                            print("MongoDB search results:", summary)
+                                        except Exception as e:
+                                            print(f"[SERVER] Vector search failed: {e}")
+                                            summary = "Vector search is currently unavailable. I'll provide general assistance based on my training."
+                                        
                                         print('_'*80)
                                         function_response=FunctionResponse(
                                                 name='vector_search',
@@ -345,6 +356,8 @@ async def websocket_endpoint(ws: WebSocket):
                             if getattr(sc, "turn_complete", False):
                                 print(f"[SERVER] Gemini finished speaking for turn {response_turn}")
                                 gemini_speaking = False  # Gemini finished speaking normally
+                                # Send turn completion signal to client
+                                await ws.send_json({"type": "turn_complete", "turn": response_turn})
                         
                         # Case 1: top-level model_turn
                         if getattr(message, "model_turn", None):

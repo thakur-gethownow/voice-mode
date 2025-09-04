@@ -120,6 +120,93 @@
       box-shadow: 0 6px 20px rgba(33, 150, 243, 0.4);
     }
     
+    .model-selector {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 15px;
+      margin-bottom: 25px;
+      flex-wrap: wrap;
+    }
+    
+    .model-selector label {
+      font-weight: 600;
+      color: #555;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    
+    #modelSelect {
+      padding: 10px 15px;
+      border: 2px solid #e0e0e0;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      background: white;
+      color: #333;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      min-width: 280px;
+    }
+    
+    #modelSelect:hover {
+      border-color: #667eea;
+      box-shadow: 0 2px 10px rgba(102, 126, 234, 0.2);
+    }
+    
+    #modelSelect:focus {
+      outline: none;
+      border-color: #667eea;
+      box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+    }
+    
+    /* Benchmark Info Styles */
+    .benchmark-info {
+      background: linear-gradient(135deg, #f5f5f5, #e8e8e8);
+      border: 1px solid #ddd;
+      border-radius: 12px;
+      padding: 15px;
+      margin: 15px 0;
+      font-size: 12px;
+    }
+    
+    .benchmark-stats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    
+    .benchmark-stats span {
+      padding: 4px 8px;
+      background: rgba(255, 255, 255, 0.7);
+      border-radius: 6px;
+      font-weight: 500;
+      text-align: center;
+    }
+    
+    .benchmark-controls {
+      display: flex;
+      gap: 5px;
+      justify-content: center;
+    }
+    
+    .benchmark-controls button {
+      padding: 4px 8px;
+      font-size: 11px;
+      background: #2196F3;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    
+    .benchmark-controls button:hover {
+      background: #1976D2;
+    }
+    
     .audio-meter {
       display: flex;
       align-items: center;
@@ -341,9 +428,32 @@
       <button id="testBtn"><i class="fas fa-vial"></i> Test Message</button>
     </div>
     
+    <div class="model-selector">
+      <label for="modelSelect"><i class="fas fa-robot"></i> AI Model:</label>
+      <select id="modelSelect">
+        <option value="models/gemini-2.5-flash-preview-native-audio-dialog" selected>gemini-2.5-flash-preview-native-audio-dialog</option>
+        <option value="models/gemini-2.5-flash-exp-native-audio-thinking-dialog">gemini-2.5-flash-exp-native-audio-thinking-dialog</option>
+        <option value="models/gemini-live-2.5-flash-preview">gemini-live-2.5-flash-preview</option>
+      </select>
+    </div>
+    
     <div class="audio-meter">
       <span class="meter-label"><i class="fas fa-microphone"></i> Audio Level:</span>
       <div id="meter"><i></i></div>
+    </div>
+    
+    <div class="benchmark-info" id="benchmarkInfo">
+      <div class="benchmark-stats">
+        <span id="currentModel">No active session</span>
+        <span id="interactionCount">Interactions: 0</span>
+        <span id="avgResponse">Avg Response: --</span>
+        <span id="avgAudio">Avg Audio: --</span>
+      </div>
+      <div class="benchmark-controls">
+        <button onclick="window.benchmark.summary()" title="Show benchmark summary in console">📊 Summary</button>
+        <button onclick="window.benchmark.export()" title="Export benchmark data">💾 Export</button>
+        <button onclick="window.benchmark.clear()" title="Clear benchmark data">🗑️ Clear</button>
+      </div>
     </div>
     
     <div id="status">🟢 idle</div>
@@ -390,7 +500,7 @@ const CHUNK_MS = 200;                // send audio approx every X ms
 const BUFFER_SIZE = 4096;            // ScriptProcessor buffer size
 const SILENCE_DURATION_MS = 1000;    // silence required to send activityEnd
 const CALIBRATE_MS = 1200;           // initial ambient noise calibration period
-const SILENCE_THRESHOLD_MULT = 3.0;  // voice threshold = noiseFloor * mult
+const SILENCE_THRESHOLD_MULT = 20.0;  // voice threshold = noiseFloor * mult (back to 5.0 with buffer protection)
 const KEEPALIVE_INTERVAL_MS = 20000; // send ping every 20s
 
 let ws = null;
@@ -405,6 +515,298 @@ let lastSendAt = 0;
 
 // VAD vars
 let playbackTime = 0;  // global tracker for sequential audio
+let audioChunkCounter = 0; // Track audio chunks for debugging
+let lastAudioDataHash = null; // Track duplicate audio data
+
+// Add debugging flag to help identify double audio source
+window.debugAudio = {
+  disableDecoded: false,
+  disableRawPCM: false,
+  logLevel: 'normal' // 'normal' or 'verbose'
+};
+let benchmarkData = {
+  currentModel: null,
+  sessions: [],
+  currentSession: null,
+  startTime: null,
+  firstResponseTime: null,
+  firstAudioTime: null,
+  messageCount: 0
+};
+
+function initBenchmark() {
+  console.log('🔬 Benchmark system initialized');
+  benchmarkData.sessions = [];
+}
+
+function startBenchmarkSession(model) {
+  const sessionId = Date.now();
+  benchmarkData.currentSession = {
+    id: sessionId,
+    model: model,
+    startTime: Date.now(),
+    interactions: [],
+    totalMessages: 0,
+    totalResponseTime: 0,
+    totalAudioTime: 0,
+    averageResponseTime: 0,
+    averageAudioTime: 0
+  };
+  benchmarkData.currentModel = model;
+  benchmarkData.sessions.push(benchmarkData.currentSession);
+  
+  console.log(`🎯 Started benchmark session for model: ${model}`);
+  console.log(`📊 Session ID: ${sessionId}`);
+  
+  updateBenchmarkUI();
+}
+
+function startInteractionTimer() {
+  console.log(`🐛 DEBUG - startInteractionTimer called`);
+  benchmarkData.startTime = Date.now();
+  benchmarkData.firstResponseTime = null;
+  benchmarkData.firstAudioTime = null;
+  benchmarkData.messageCount++;
+  console.log(`🐛 DEBUG - Timer started - startTime: ${benchmarkData.startTime}, messageCount: ${benchmarkData.messageCount}`);
+}
+
+function recordFirstResponse() {
+  console.log(`🐛 DEBUG - recordFirstResponse called`);
+  console.log(`🐛 DEBUG - firstResponseTime exists: ${!!benchmarkData.firstResponseTime}`);
+  console.log(`🐛 DEBUG - startTime exists: ${!!benchmarkData.startTime}`);
+  
+  // Fallback: if startTime is null, start it now (in case VAD didn't trigger)
+  if (!benchmarkData.startTime) {
+    console.log(`🐛 DEBUG - startTime was null, starting timer now as fallback`);
+    benchmarkData.startTime = Date.now();
+    benchmarkData.messageCount++;
+  }
+  
+  if (!benchmarkData.firstResponseTime && benchmarkData.startTime) {
+    benchmarkData.firstResponseTime = Date.now() - benchmarkData.startTime;
+    console.log(`⚡ First response: ${(benchmarkData.firstResponseTime / 1000).toFixed(2)}s`);
+    console.log(`🐛 DEBUG - Start time: ${benchmarkData.startTime}, Current time: ${Date.now()}, Diff: ${benchmarkData.firstResponseTime}`);
+  } else {
+    console.log(`🐛 DEBUG - recordFirstResponse skipped - firstResponseTime: ${benchmarkData.firstResponseTime}, startTime: ${benchmarkData.startTime}`);
+  }
+}
+
+function recordFirstAudio() {
+  console.log(`🐛 DEBUG - recordFirstAudio called`);
+  console.log(`🐛 DEBUG - firstAudioTime exists: ${!!benchmarkData.firstAudioTime}`);
+  console.log(`🐛 DEBUG - startTime exists: ${!!benchmarkData.startTime}`);
+  
+  // Fallback: if startTime is null, start it now (in case VAD didn't trigger)
+  if (!benchmarkData.startTime) {
+    console.log(`🐛 DEBUG - startTime was null, starting timer now as fallback`);
+    benchmarkData.startTime = Date.now();
+    benchmarkData.messageCount++;
+  }
+  
+  if (!benchmarkData.firstAudioTime && benchmarkData.startTime) {
+    benchmarkData.firstAudioTime = Date.now() - benchmarkData.startTime;
+    console.log(`🎵 First audio: ${(benchmarkData.firstAudioTime / 1000).toFixed(2)}s`);
+    console.log(`🐛 DEBUG - Start time: ${benchmarkData.startTime}, Current time: ${Date.now()}, Diff: ${benchmarkData.firstAudioTime}`);
+  } else {
+    console.log(`🐛 DEBUG - recordFirstAudio skipped - firstAudioTime: ${benchmarkData.firstAudioTime}, startTime: ${benchmarkData.startTime}`);
+  }
+}
+
+function endInteraction() {
+  console.log(`🐛 DEBUG - endInteraction called`);
+  console.log(`🐛 DEBUG - benchmarkData.currentSession:`, benchmarkData.currentSession);
+  console.log(`🐛 DEBUG - benchmarkData.startTime:`, benchmarkData.startTime);
+  console.log(`🐛 DEBUG - benchmarkData.firstResponseTime:`, benchmarkData.firstResponseTime);
+  console.log(`🐛 DEBUG - benchmarkData.firstAudioTime:`, benchmarkData.firstAudioTime);
+  
+  if (benchmarkData.currentSession && benchmarkData.startTime) {
+    const totalTime = Date.now() - benchmarkData.startTime;
+    
+    const interaction = {
+      messageIndex: benchmarkData.messageCount,
+      timestamp: new Date().toISOString(),
+      responseTime: benchmarkData.firstResponseTime,
+      audioTime: benchmarkData.firstAudioTime,
+      totalTime: totalTime
+    };
+    
+    benchmarkData.currentSession.interactions.push(interaction);
+    benchmarkData.currentSession.totalMessages++;
+    
+    if (benchmarkData.firstResponseTime) {
+      benchmarkData.currentSession.totalResponseTime += benchmarkData.firstResponseTime;
+      benchmarkData.currentSession.averageResponseTime = 
+        benchmarkData.currentSession.totalResponseTime / benchmarkData.currentSession.totalMessages;
+    }
+    
+    if (benchmarkData.firstAudioTime) {
+      benchmarkData.currentSession.totalAudioTime += benchmarkData.firstAudioTime;
+      benchmarkData.currentSession.averageAudioTime = 
+        benchmarkData.currentSession.totalAudioTime / benchmarkData.currentSession.totalMessages;
+    }
+    
+    console.log(`📈 Interaction ${benchmarkData.messageCount} completed:`, interaction);
+    console.log(`📊 Session averages - Response: ${(benchmarkData.currentSession.averageResponseTime / 1000).toFixed(2)}s, Audio: ${(benchmarkData.currentSession.averageAudioTime / 1000).toFixed(2)}s`);
+    
+    // Update UI
+    updateBenchmarkUI();
+    
+    // Reset for next interaction
+    benchmarkData.startTime = null;
+    benchmarkData.firstResponseTime = null;
+    benchmarkData.firstAudioTime = null;
+  }
+}
+
+function endBenchmarkSession() {
+  if (benchmarkData.currentSession) {
+    benchmarkData.currentSession.endTime = Date.now();
+    benchmarkData.currentSession.duration = benchmarkData.currentSession.endTime - benchmarkData.currentSession.startTime;
+    
+    console.log(`🏁 Benchmark session ended for ${benchmarkData.currentModel}`);
+    console.log(`📊 Session summary:`, {
+      model: benchmarkData.currentSession.model,
+      duration: `${(benchmarkData.currentSession.duration / 1000).toFixed(1)}s`,
+      totalMessages: benchmarkData.currentSession.totalMessages,
+      averageResponseTime: `${(benchmarkData.currentSession.averageResponseTime / 1000).toFixed(2)}s`,
+      averageAudioTime: `${(benchmarkData.currentSession.averageAudioTime / 1000).toFixed(2)}s`,
+      interactions: benchmarkData.currentSession.interactions
+    });
+    
+    benchmarkData.currentSession = null;
+    benchmarkData.currentModel = null;
+    benchmarkData.messageCount = 0;
+    
+    // Update UI
+    updateBenchmarkUI();
+  }
+}
+
+function exportBenchmarkData() {
+  const exportData = {
+    timestamp: new Date().toISOString(),
+    totalSessions: benchmarkData.sessions.length,
+    sessions: benchmarkData.sessions,
+    summary: generateBenchmarkSummary()
+  };
+  
+  console.log('📊 COMPLETE BENCHMARK DATA:', exportData);
+  
+  // Also download as JSON file
+  const dataStr = JSON.stringify(exportData, null, 2);
+  const dataBlob = new Blob([dataStr], {type: 'application/json'});
+  const url = URL.createObjectURL(dataBlob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `benchmark_${new Date().toISOString().replace(/:/g, '-')}.json`;
+  link.click();
+  URL.revokeObjectURL(url);
+  
+  return exportData;
+}
+
+function generateBenchmarkSummary() {
+  const modelStats = {};
+  
+  benchmarkData.sessions.forEach(session => {
+    if (!modelStats[session.model]) {
+      modelStats[session.model] = {
+        sessions: 0,
+        totalMessages: 0,
+        totalResponseTime: 0,
+        totalAudioTime: 0,
+        responseTimes: [],
+        audioTimes: []
+      };
+    }
+    
+    const stats = modelStats[session.model];
+    stats.sessions++;
+    stats.totalMessages += session.totalMessages;
+    stats.totalResponseTime += session.totalResponseTime;
+    stats.totalAudioTime += session.totalAudioTime;
+    
+    session.interactions.forEach(interaction => {
+      if (interaction.responseTime) stats.responseTimes.push(interaction.responseTime);
+      if (interaction.audioTime) stats.audioTimes.push(interaction.audioTime);
+    });
+  });
+  
+  // Calculate statistics for each model
+  Object.keys(modelStats).forEach(model => {
+    const stats = modelStats[model];
+    stats.avgResponseTime = stats.responseTimes.length > 0 ? 
+      stats.responseTimes.reduce((a, b) => a + b, 0) / stats.responseTimes.length : 0;
+    stats.avgAudioTime = stats.audioTimes.length > 0 ? 
+      stats.audioTimes.reduce((a, b) => a + b, 0) / stats.audioTimes.length : 0;
+    
+    if (stats.responseTimes.length > 0) {
+      stats.responseTimes.sort((a, b) => a - b);
+      stats.minResponseTime = stats.responseTimes[0];
+      stats.maxResponseTime = stats.responseTimes[stats.responseTimes.length - 1];
+      stats.medianResponseTime = stats.responseTimes[Math.floor(stats.responseTimes.length / 2)];
+      
+      // Convert to seconds for display
+      stats.avgResponseTimeSeconds = (stats.avgResponseTime / 1000).toFixed(2);
+      stats.minResponseTimeSeconds = (stats.minResponseTime / 1000).toFixed(2);
+      stats.maxResponseTimeSeconds = (stats.maxResponseTime / 1000).toFixed(2);
+      stats.medianResponseTimeSeconds = (stats.medianResponseTime / 1000).toFixed(2);
+    }
+    
+    if (stats.audioTimes.length > 0) {
+      stats.avgAudioTimeSeconds = (stats.avgAudioTime / 1000).toFixed(2);
+    }
+  });
+  
+  return modelStats;
+}
+
+function updateBenchmarkUI() {
+  const currentModelEl = document.getElementById('currentModel');
+  const interactionCountEl = document.getElementById('interactionCount');
+  const avgResponseEl = document.getElementById('avgResponse');
+  const avgAudioEl = document.getElementById('avgAudio');
+  
+  if (benchmarkData.currentSession) {
+    const session = benchmarkData.currentSession;
+    const modelName = session.model.replace('models/', '').substring(0, 20) + '...';
+    
+    currentModelEl.textContent = `Model: ${modelName}`;
+    interactionCountEl.textContent = `Interactions: ${session.totalMessages}`;
+    
+    if (session.averageResponseTime > 0) {
+      avgResponseEl.textContent = `Avg Response: ${(session.averageResponseTime / 1000).toFixed(2)}s`;
+    } else {
+      avgResponseEl.textContent = `Avg Response: --`;
+    }
+    
+    if (session.averageAudioTime > 0) {
+      avgAudioEl.textContent = `Avg Audio: ${(session.averageAudioTime / 1000).toFixed(2)}s`;
+    } else {
+      avgAudioEl.textContent = `Avg Audio: --`;
+    }
+  } else {
+    currentModelEl.textContent = 'No active session';
+    interactionCountEl.textContent = 'Interactions: 0';
+    avgResponseEl.textContent = 'Avg Response: --';
+    avgAudioEl.textContent = 'Avg Audio: --';
+  }
+}
+
+// Add benchmark controls to console
+window.benchmark = {
+  export: exportBenchmarkData,
+  summary: () => {
+    console.log('📊 BENCHMARK SUMMARY:', generateBenchmarkSummary());
+    return generateBenchmarkSummary();
+  },
+  clear: () => {
+    benchmarkData.sessions = [];
+    console.log('🗑️ Benchmark data cleared');
+    updateBenchmarkUI();
+  },
+  current: () => benchmarkData.currentSession
+};
 let activeAudioSources = [];  // track active audio sources for interruption
 let audioSourceCounter = 0;   // assign unique IDs to audio sources for debugging
 let noiseFloor = 0;
@@ -416,11 +818,14 @@ let currentUserMessage = ""; // Track current user speech
 let lastUserMessageElement = null; // Track the last user message element for updates
 let lastGeminiMessageElement = null; // Track the last Gemini message element for streaming updates
 let currentGeminiMessage = ""; // Track current Gemini response being built
+let lastAudioStartTime = 0; // Track when Gemini audio started
+const AUDIO_START_BUFFER_MS = 500; // Wait 500ms after audio starts before allowing interrupts
 
 // UI
 const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
 const testBtn = document.getElementById('testBtn');
+const modelSelect = document.getElementById('modelSelect');
 const statusEl = document.getElementById('status');
 const meterBar = document.querySelector('#meter > i');
 const loaderEl = document.getElementById('loader');
@@ -436,12 +841,34 @@ console.log('[INIT] DOM elements found:', {
   messagesEl: !!messagesEl
 });
 
+// Initialize benchmark system
+initBenchmark();
+updateBenchmarkUI();
+
 startBtn.onclick = startSession;
 stopBtn.onclick = stopSession;
 testBtn.onclick = () => {
   console.log('[TEST] Adding test messages');
   addMessage('Test user message', true);
   addMessage('Test Gemini response', false);
+};
+
+// Handle model changes during active session
+modelSelect.onchange = () => {
+  const newModel = modelSelect.value;
+  console.log('[MODEL] Model changed to:', newModel);
+  
+  // If session is active (stop button is enabled), restart with new model
+  if (!stopBtn.disabled) {
+    console.log('[MODEL] Session active, restarting with new model...');
+    logStatus(`Switching to ${newModel.replace('models/', '')}...`);
+    
+    // Stop current session and start new one with selected model
+    stopSession();
+    setTimeout(() => {
+      startSession();
+    }, 500); // Small delay to ensure clean restart
+  }
 };
 
 function logStatus(s) {
@@ -532,7 +959,16 @@ function clearMessages() {
 function trackAudioSource(src, type) {
   const id = ++audioSourceCounter;
   src._debugId = id;
+  
+  // No audio source limiting - let all audio play naturally
   activeAudioSources.push(src);
+  
+  // Track when audio starts for interrupt buffer logic
+  if (activeAudioSources.length === 1) { // First audio source
+    lastAudioStartTime = Date.now();
+    console.log(`[AUDIO] First audio started, setting buffer time: ${lastAudioStartTime}`);
+  }
+  
   console.log(`[AUDIO] Started ${type} audio (ID: ${id}, ${activeAudioSources.length} total sources)`);
   
   src.onended = () => {
@@ -585,19 +1021,41 @@ function openWs() {
           return;
         }
         
+        // Handle turn completion signal from server
+        if (msg.type === 'turn_complete') {
+          console.log('[CLIENT] Gemini turn completed, resetting message tracking');
+          
+          // End benchmark interaction
+          endInteraction();
+          
+          // Reset message tracking for next response
+          lastGeminiMessageElement = null;
+          lastUserMessageElement = null; // Also reset user message element for next turn
+          // Note: don't reset currentGeminiMessage here as it might still be displayed
+          return;
+        }
+        
         // Handle text responses from Gemini
         if (msg.type === 'text' && msg.text) {
           console.log('[CLIENT] Handling text response from Gemini:', msg.text);
           console.log('[CLIENT] messagesEl exists:', !!messagesEl);
           console.log('[CLIENT] lastGeminiMessageElement exists:', !!lastGeminiMessageElement);
           
+          // If this is the start of a new Gemini response, reset the message
+          if (!lastGeminiMessageElement) {
+            console.log('[CLIENT] Starting new Gemini response, resetting message');
+            currentGeminiMessage = "";
+          }
+          
           // Append this chunk to the current Gemini message
           currentGeminiMessage += msg.text;
           console.log('[CLIENT] Current Gemini message:', currentGeminiMessage);
           
           if (!lastGeminiMessageElement) {
-            // Create new message if none exists
+            // Create new message if none exists - this is the first response
             console.log('[CLIENT] Creating new Gemini message');
+            console.log('🐛 DEBUG - About to call recordFirstResponse()');
+            recordFirstResponse(); // Record benchmark timing
             addMessage(currentGeminiMessage, false);
             console.log('[CLIENT] After addMessage - lastGeminiMessageElement:', !!lastGeminiMessageElement);
           } else {
@@ -613,6 +1071,12 @@ function openWs() {
         // Handle transcriptions from server
         if (msg.type === 'transcript') {
           console.log(`[CLIENT] Handling ${msg.source} transcript:`, msg.text);
+          
+          // Make sure no TTS is accidentally triggered
+          if (window.speechSynthesis) {
+            window.speechSynthesis.cancel(); // Stop any accidental TTS
+          }
+          
           if (msg.source === 'input') {
             // User speech transcription - update in real-time
             currentUserMessage = msg.text;
@@ -630,13 +1094,20 @@ function openWs() {
             // Gemini speech transcription - display this as the text response
             console.log('[CLIENT] Gemini speech transcript:', msg.text);
             
+            // If this is the start of a new Gemini response, reset the message
+            if (!lastGeminiMessageElement) {
+              console.log('[CLIENT] Starting new Gemini response from transcript, resetting message');
+              currentGeminiMessage = "";
+            }
+            
             // Append this chunk to the current Gemini message
             currentGeminiMessage += msg.text;
             console.log('[CLIENT] Current Gemini message from transcript:', currentGeminiMessage);
             
             if (!lastGeminiMessageElement) {
-              // Create new message if none exists
+              // Create new message if none exists - this is the first response
               console.log('[CLIENT] Creating new Gemini message from transcript');
+              recordFirstResponse(); // Record benchmark timing
               addMessage(currentGeminiMessage, false);
               console.log('[CLIENT] After addMessage - lastGeminiMessageElement:', !!lastGeminiMessageElement);
             } else {
@@ -660,21 +1131,54 @@ function openWs() {
 
     // binary: assume audio bytes (raw PCM16 24kHz from Gemini) — decode & play
     if (ev.data instanceof ArrayBuffer) {
-      console.log(`[AUDIO] Received audio data, size: ${ev.data.byteLength} bytes`);
+      audioChunkCounter++;
+      
+      // Simple hash to detect duplicate audio chunks
+      const audioHash = ev.data.byteLength + '_' + (audioChunkCounter % 10);
+      if (audioHash === lastAudioDataHash && ev.data.byteLength < 15000) { // Only check small chunks
+        console.log(`[AUDIO] Skipping potential duplicate chunk #${audioChunkCounter}`);
+        return;
+      }
+      lastAudioDataHash = audioHash;
+      
+      // Skip only extremely tiny chunks (very minimal filtering now)
+      if (ev.data.byteLength < 50) {
+        console.log(`[AUDIO] Skipping extremely tiny chunk #${audioChunkCounter} (${ev.data.byteLength} bytes)`);
+        return;
+      }
+      
+      console.log(`[AUDIO] Received audio chunk #${audioChunkCounter}, size: ${ev.data.byteLength} bytes`);
       hideLoader(); // Hide loader when audio starts arriving
+      
+      const audioData = ev.data;
+      let audioProcessed = false; // Flag to prevent double processing
+      
       try {
-        // Try decodeAudioData — this assumes the server sent a valid encoded audio container (e.g. WAV/Opus)
-        const audioData = ev.data;
+        // Try decodeAudioData first — this assumes the server sent a valid encoded audio container (e.g. WAV/Opus)
         audioCtx.decodeAudioData(audioData.slice(0)).then(decoded => {
-          console.log('[AUDIO] Successfully decoded audio, playing via decodeAudioData');
-          playDecodedAudio(decoded);
+          if (!audioProcessed && !window.debugAudio.disableDecoded) {
+            audioProcessed = true;
+            console.log(`[AUDIO] Chunk #${audioChunkCounter} successfully decoded audio, playing via decodeAudioData`);
+            playDecodedAudio(decoded);
+          } else if (window.debugAudio.disableDecoded) {
+            console.log(`[AUDIO] Chunk #${audioChunkCounter} decoded audio DISABLED for debugging`);
+          }
         }).catch(err => {
-          // Fallback: treat as raw PCM16LE 24000Hz mono
-          console.log('[AUDIO] decodeAudioData failed — playing as raw PCM16 24kHz');
-          playRawPCM16(audioData, 24000);
+          if (!audioProcessed && !window.debugAudio.disableRawPCM) {
+            audioProcessed = true;
+            // Fallback: treat as raw PCM16LE 24000Hz mono
+            console.log(`[AUDIO] Chunk #${audioChunkCounter} decodeAudioData failed — playing as raw PCM16 24kHz`, err.message);
+            playRawPCM16(audioData, 24000);
+          } else if (window.debugAudio.disableRawPCM) {
+            console.log(`[AUDIO] Chunk #${audioChunkCounter} raw PCM audio DISABLED for debugging`);
+          }
         });
       } catch (err) {
-        console.error('ws binary handling error', err);
+        if (!audioProcessed) {
+          audioProcessed = true;
+          console.log(`[AUDIO] Chunk #${audioChunkCounter} audio context error, playing as raw PCM16`, err.message);
+          playRawPCM16(audioData, 24000);
+        }
       }
     }
   };
@@ -693,8 +1197,10 @@ function openWs() {
   };
 }
 
-// Play raw PCM16LE mono at given sample rate, scheduled sequentially
+// Play raw PCM16LE mono at given sample rate
 function playRawPCM16(buffer, sampleRate = 24000) {
+  console.log(`[AUDIO] playRawPCM16 called - buffer size: ${buffer.byteLength} bytes, sample rate: ${sampleRate}`);
+  
   if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   const int16 = new Int16Array(buffer);
   const float32 = new Float32Array(int16.length);
@@ -710,11 +1216,16 @@ function playRawPCM16(buffer, sampleRate = 24000) {
   // Track this audio source for potential interruption
   trackAudioSource(src, 'raw-PCM16');
   
-  // Schedule playback sequentially
+  // Record first audio timing for benchmark
+  recordFirstAudio();
+  
+  // Simple sequential scheduling
   const now = audioCtx.currentTime;
   if (playbackTime < now) {
     playbackTime = now;
   }
+  
+  console.log(`[AUDIO] Playing raw PCM16 at ${playbackTime.toFixed(3)}s, duration: ${audioBuffer.duration.toFixed(3)}s`);
   src.start(playbackTime);
   playbackTime += audioBuffer.duration;
 }
@@ -797,27 +1308,34 @@ function onAudioProcess(ev) {
     }
   }
 
-  // VAD logic
-  const voiceThreshold = Math.max(1e-6, noiseFloor * SILENCE_THRESHOLD_MULT);
+  // VAD logic - use moderately higher threshold while Gemini audio is playing
+  const isGeminiSpeaking = activeAudioSources.length > 0;
+  const baseThreshold = Math.max(1e-6, noiseFloor * SILENCE_THRESHOLD_MULT);
+  const voiceThreshold = isGeminiSpeaking ? baseThreshold * 2 : baseThreshold; // 2x higher threshold while Gemini speaks (instead of 4x)
+  const currentTime = Date.now();
+  
   if (calibrated && rms > voiceThreshold) {
-    // voice present
+    // voice present and above appropriate threshold
     silenceStart = null;
     if (!speaking) {
       speaking = true;
+      
+      console.log(`[VAD] Voice detected - RMS: ${rms.toFixed(4)}, Threshold: ${voiceThreshold.toFixed(4)} (${isGeminiSpeaking ? 'high - Gemini speaking' : 'normal'}), Audio sources: ${activeAudioSources.length}`);
       
       // Reset Gemini message tracking for new turn
       currentGeminiMessage = "";
       lastGeminiMessageElement = null;
       
-      // Don't immediately stop audio here - let the server decide if interruption is needed
-      // The server will send an interrupt signal only if Gemini is actually speaking
-      console.log('User started speaking - sending activityStart to server');
+      console.log('🐛 DEBUG - Voice activity detected, starting interaction');
       
       // Create initial user message placeholder
       addMessage('...', true);
       
-      sendJson({ type: 'activityStart', ts: Date.now() });
-      console.log('>>> activityStart');
+      sendJson({ type: 'activityStart', ts: currentTime });
+      console.log('>>> activityStart (with adaptive threshold)');
+      
+      // Start benchmark timer for this interaction
+      startInteractionTimer();
       logStatus('speaking');
     }
   } else {
@@ -953,6 +1471,8 @@ function stopAllAudioPlayback() {
 }
 
 function playDecodedAudio(audioBuffer) {
+  console.log(`[AUDIO] playDecodedAudio called - duration: ${audioBuffer.duration.toFixed(3)}s, channels: ${audioBuffer.numberOfChannels}, sample rate: ${audioBuffer.sampleRate}`);
+  
   if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   const src = audioCtx.createBufferSource();
   src.buffer = audioBuffer;
@@ -961,34 +1481,20 @@ function playDecodedAudio(audioBuffer) {
   // Track this audio source for potential interruption
   trackAudioSource(src, 'decoded');
   
-  src.start();
-}
-
-// Play raw PCM16LE mono at given sample rate, scheduled sequentially
-function playRawPCM16(buffer, sampleRate = 24000) {
-  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  const int16 = new Int16Array(buffer);
-  const float32 = new Float32Array(int16.length);
-  for (let i = 0; i < int16.length; i++) {
-    float32[i] = int16[i] / 32768;
-  }
-  const audioBuffer = audioCtx.createBuffer(1, float32.length, sampleRate);
-  audioBuffer.getChannelData(0).set(float32);
-  const src = audioCtx.createBufferSource();
-  src.buffer = audioBuffer;
-  src.connect(audioCtx.destination);
+  // Record first audio timing for benchmark
+  recordFirstAudio();
   
-  // Track this audio source for potential interruption
-  trackAudioSource(src, 'raw-PCM16');
-  
-  // Schedule playback sequentially
+  // Simple sequential scheduling
   const now = audioCtx.currentTime;
   if (playbackTime < now) {
     playbackTime = now;
   }
+  
+  console.log(`[AUDIO] Playing decoded audio at ${playbackTime.toFixed(3)}s, duration: ${audioBuffer.duration.toFixed(3)}s`);
   src.start(playbackTime);
   playbackTime += audioBuffer.duration;
 }
+
 // --- UI helpers ---
 function updateMeter(rms) {
   // convert rms to 0..1 scale (rough)
@@ -1003,6 +1509,22 @@ async function startSession() {
   stopBtn.disabled = false;
   hideLoader(); // Make sure loader starts hidden
   clearMessages(); // Clear previous conversation
+  stopAllAudioPlayback(); // Reset audio playback state for new model
+  
+  // Force reset playback time
+  if (audioCtx) {
+    playbackTime = audioCtx.currentTime;
+    console.log(`[AUDIO] Force reset playback time to ${playbackTime.toFixed(3)}`);
+  }
+  
+  // Reset audio tracking
+  audioChunkCounter = 0;
+  lastAudioDataHash = null;
+  
+  // Start benchmark session
+  const selectedModel = modelSelect.value;
+  startBenchmarkSession(selectedModel);
+  
   logStatus('starting session...');
 
   openWs();
@@ -1011,14 +1533,18 @@ async function startSession() {
   // send initial presence and sample rate once WS is open (will be retried by server if needed)
   setTimeout(()=> {
     if (ws && ws.readyState === WebSocket.OPEN) {
+      const selectedModel = modelSelect.value;
       sendJson({ type: 'hello', sampleRate, ts: Date.now() });
-      // Send session start message to trigger Gemini's initial response
-      sendJson({ type: 'sessionStart', ts: Date.now() });
+      // Send session start message with selected model to trigger Gemini's initial response
+      sendJson({ type: 'sessionStart', model: selectedModel, ts: Date.now() });
     }
   }, 400);
 }
 
 function stopSession() {
+  // End benchmark session
+  endBenchmarkSession();
+  
   // send final activityEnd and session_stop
   try {
     if (ws && ws.readyState === WebSocket.OPEN) {
